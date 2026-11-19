@@ -15,25 +15,25 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    // SECTION 1: HEADER
+                    // DASHBOARD SECTION 1: HEADER
                     headerSection
 
-                    // SECTION 5: QUICK ACTIONS (surfaced prominently for fast access)
-                    quickActionsSection
-
-                    // SECTION 2: COLLECTION STATISTICS
-                    statisticsSection
-
-                    // SECTION 3: RECENTLY ADDED
-                    RecentAlbumSection(albums: viewModel.recentlyAdded)
-
-                    // SECTION 4: TOP LISTENED ALBUMS
-                    TopListenedSection(albums: viewModel.topListened)
-
-                    // Empty state fallback banner when collection is empty
+                    // Empty state banner when library has zero albums
                     if !viewModel.hasAlbums {
                         emptyCollectionCard
                     }
+
+                    // DASHBOARD SECTION 2: COLLECTION STATISTICS
+                    statisticsSection
+
+                    // DASHBOARD SECTION 3: RECENTLY ADDED
+                    RecentAlbumSection(albums: viewModel.recentlyAdded)
+
+                    // DASHBOARD SECTION 4: TOP LISTENED ALBUMS
+                    TopListenedSection(albums: viewModel.topListened)
+
+                    // DASHBOARD SECTION 5: QUICK ACTIONS
+                    quickActionsSection
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -89,7 +89,7 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - SECTION 1: HEADER
+    // MARK: - DASHBOARD SECTION 1: HEADER
 
     private var headerSection: some View {
         HStack(alignment: .center) {
@@ -133,7 +133,7 @@ struct DashboardView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - SECTION 2: COLLECTION STATISTICS
+    // MARK: - DASHBOARD SECTION 2: COLLECTION STATISTICS
 
     private var statisticsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -179,7 +179,7 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - SECTION 5: QUICK ACTIONS
+    // MARK: - DASHBOARD SECTION 5: QUICK ACTIONS
 
     private var quickActionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -204,8 +204,8 @@ struct DashboardView: View {
                     AlbumListView(favouritesOnly: false)
                 } label: {
                     quickActionCard(
-                        title: "Browse",
-                        subtitle: "All albums",
+                        title: "Browse Albums",
+                        subtitle: "Full collection",
                         icon: "square.grid.2x2.fill",
                         color: .blue
                     )
@@ -216,8 +216,8 @@ struct DashboardView: View {
                     FavouriteView()
                 } label: {
                     quickActionCard(
-                        title: "Favourites",
-                        subtitle: "Starred",
+                        title: "View Favourites",
+                        subtitle: "Starred records",
                         icon: "heart.fill",
                         color: .pink
                     )
