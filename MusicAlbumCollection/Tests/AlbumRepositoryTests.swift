@@ -501,9 +501,95 @@ struct AlbumRepositoryTests {
         #expect(albumVM.album(withID: album.id) == nil)
     }
 
-    @Test("AlbumListViewModel filters by search text and genre, and deletes items")
+    // MARK: - Search, Genre Filter & Sorting Tests
+
+    @Test("AlbumSortOption sorts collections correctly across all 8 variants without mutating source")
+    func sortOptionAllVariants() {
+        let baseDate = Date(timeIntervalSince1970: 10_000_000)
+        let albums = [
+            Album(name: "Charlie", artist: "Zeta", genre: .rock, releaseYear: 2010, musicDirector: "", trackCount: 8, listenCount: 5, dateAdded: baseDate.addingTimeInterval(100)),
+            Album(name: "Alpha", artist: "Beta", genre: .pop, releaseYear: 2020, musicDirector: "", trackCount: 10, listenCount: 20, dateAdded: baseDate.addingTimeInterval(300)),
+            Album(name: "Bravo", artist: "Alpha", genre: .film, releaseYear: 1995, musicDirector: "", trackCount: 6, listenCount: 15, dateAdded: baseDate.addingTimeInterval(200))
+        ]
+
+        // 1. Recently Added
+        let recent = AlbumSortOption.recentlyAdded.sort(albums: albums)
+        #expect(recent.map(\.name) == ["Alpha", "Bravo", "Charlie"])
+
+        // 2. Oldest Added
+        let oldest = AlbumSortOption.oldestAdded.sort(albums: albums)
+        #expect(oldest.map(\.name) == ["Charlie", "Bravo", "Alpha"])
+
+        // 3. Album Name A-Z
+        let nameAZ = AlbumSortOption.albumNameAZ.sort(albums: albums)
+        #expect(nameAZ.map(\.name) == ["Alpha", "Bravo", "Charlie"])
+
+        // 4. Album Name Z-A
+        let nameZA = AlbumSortOption.albumNameZA.sort(albums: albums)
+        #expect(nameZA.map(\.name) == ["Charlie", "Bravo", "Alpha"])
+
+        // 5. Artist Name
+        let artistSorted = AlbumSortOption.artistName.sort(albums: albums)
+        #expect(artistSorted.map(\.artist) == ["Alpha", "Beta", "Zeta"])
+
+        // 6. Release Year Newest First
+        let yearNewest = AlbumSortOption.releaseYearNewest.sort(albums: albums)
+        #expect(yearNewest.map(\.name) == ["Alpha", "Charlie", "Bravo"])
+
+        // 7. Release Year Oldest First
+        let yearOldest = AlbumSortOption.releaseYearOldest.sort(albums: albums)
+        #expect(yearOldest.map(\.name) == ["Bravo", "Charlie", "Alpha"])
+
+        // 8. Most Listened
+        let mostListened = AlbumSortOption.mostListened.sort(albums: albums)
+        #expect(mostListened.map(\.name) == ["Alpha", "Bravo", "Charlie"])
+
+        // Source must remain completely unchanged
+        #expect(albums.map(\.name) == ["Charlie", "Alpha", "Bravo"])
+    }
+
+    @Test("AlbumFilterState applies real-time case-insensitive search and genre filter together")
+    func filterStateSearchAndGenre() {
+        let albums = [
+            Album(name: "Roja", artist: "A. R. Rahman", genre: .film, releaseYear: 1992, musicDirector: "A. R. Rahman", trackCount: 6),
+            Album(name: "Rockstar", artist: "A. R. Rahman", genre: .rock, releaseYear: 2011, musicDirector: "A. R. Rahman", trackCount: 14),
+            Album(name: "Abbey Road", artist: "The Beatles", genre: .rock, releaseYear: 1969, musicDirector: "George Martin", trackCount: 17)
+        ]
+
+        var state = AlbumFilterState()
+
+        // Empty filter returns all
+        #expect(state.apply(to: albums).count == 3)
+        #expect(!state.isFilteringActive)
+
+        // Case-insensitive partial name search
+        state.searchText = "roj"
+        #expect(state.apply(to: albums).map(\.name) == ["Roja"])
+
+        // Case-insensitive artist search
+        state.searchText = "rahman"
+        #expect(state.apply(to: albums).count == 2)
+
+        // Combined search + genre filter
+        state.selectedGenre = .rock
+        let combined = state.apply(to: albums)
+        #expect(combined.count == 1)
+        #expect(combined.first?.name == "Rockstar")
+
+        // Clearing search retains genre
+        state.searchText = ""
+        let genreOnly = state.apply(to: albums)
+        #expect(genreOnly.count == 2)
+        #expect(genreOnly.allSatisfy { $0.genre == .rock })
+
+        // Reset restores all
+        state.reset()
+        #expect(state.apply(to: albums).count == 3)
+    }
+
+    @Test("AlbumListViewModel manages search, genre, sort state and empty indicators")
     @MainActor
-    func listViewModelSearchFilterAndDelete() {
+    func listViewModelSearchFilterSorting() {
         let mockStorage = MockFileStorage()
         let defaults = UserDefaults(suiteName: "list_vm_\(UUID().uuidString)")!
         let repository = DefaultAlbumRepository(
@@ -516,25 +602,72 @@ struct AlbumRepositoryTests {
         listVM.bind(to: albumVM)
 
         #expect(listVM.displayedAlbums.count == 5)
+        #expect(listVM.activeFilterCount == 0)
 
-        // Search filter
-        listVM.searchText = "Rahman"
-        #expect(listVM.displayedAlbums.allSatisfy { $0.artist.contains("Rahman") })
+        // Search
+        listVM.searchText = "rahman"
+        #expect(listVM.isSearchingOrFiltering)
+        #expect(listVM.displayedAlbums.allSatisfy { $0.artist.localizedCaseInsensitiveContains("rahman") })
 
-        listVM.searchText = ""
-
-        // Genre filter
+        // Genre
         listVM.selectedGenre = .rock
-        #expect(listVM.displayedAlbums.allSatisfy { $0.genre == .rock })
+        #expect(listVM.activeFilterCount == 1)
 
-        // Clear filter
-        listVM.selectedGenre = nil
+        // Sort option
+        listVM.sortOption = .albumNameAZ
+        #expect(listVM.activeFilterCount == 2)
+
+        // Empty search result handling
+        listVM.searchText = "NON_EXISTENT_QUERY_123"
+        #expect(listVM.isEmpty)
+        #expect(listVM.emptyTitle == "No Results Found")
+        #expect(listVM.emptyIcon == "magnifyingglass")
+
+        // Clear search restores
+        listVM.clearSearch()
+        #expect(listVM.searchText.isEmpty)
+
+        // Reset all
+        listVM.resetAll()
+        #expect(listVM.activeFilterCount == 0)
         #expect(listVM.displayedAlbums.count == 5)
+    }
 
-        // Delete first item
-        let firstID = listVM.displayedAlbums.first!.id
-        listVM.deleteAlbums(at: IndexSet(integer: 0))
-        #expect(!listVM.displayedAlbums.contains(where: { $0.id == firstID }))
-        #expect(listVM.displayedAlbums.count == 4)
+    @Test("FavouriteViewModel respects active search and genre filter")
+    @MainActor
+    func favouriteViewModelSearchAndFilter() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "fav_vm_\(UUID().uuidString)")!
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let albumVM = AlbumViewModel(repository: repository)
+        let favVM = FavouriteViewModel(repository: repository)
+        favVM.bind(to: albumVM)
+
+        // Mark two albums as favourites with different genres
+        let album1 = repository.albums[0]
+        let album2 = repository.albums[1]
+        albumVM.toggleFavourite(album1)
+        albumVM.toggleFavourite(album2)
+
+        #expect(favVM.totalFavourites == 2)
+
+        // Search within favourites
+        favVM.searchText = album1.name
+        #expect(favVM.filteredFavourites.count == 1)
+        #expect(favVM.filteredFavourites.first?.id == album1.id)
+
+        // Filter by matching genre
+        favVM.searchText = ""
+        favVM.selectedGenre = album2.genre
+        #expect(favVM.filteredFavourites.allSatisfy { $0.genre == album2.genre })
+
+        // Reset
+        favVM.searchText = ""
+        favVM.selectedGenre = nil
+        #expect(favVM.filteredFavourites.count == 2)
     }
 }

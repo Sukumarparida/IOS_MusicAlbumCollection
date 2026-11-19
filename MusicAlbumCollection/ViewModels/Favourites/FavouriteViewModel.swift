@@ -7,6 +7,8 @@ final class FavouriteViewModel: ObservableObject {
     @Published private(set) var favouriteAlbums: [Album] = []
     @Published var searchText: String = ""
     @Published var selectedGenre: Genre? = nil
+    @Published var sortOption: AlbumSortOption = .recentlyAdded
+    @Published var showingFilterSheet: Bool = false
 
     private let repository: AlbumRepository
     private weak var albumViewModel: AlbumViewModel?
@@ -33,16 +35,17 @@ final class FavouriteViewModel: ObservableObject {
         self.favouriteAlbums = albumViewModel.albums.filter { $0.isFavourite }
     }
 
-    /// Returns the filtered list of favourite albums matching the search text and selected genre.
+    /// Returns the filtered and sorted list of favourite albums matching the search text and selected genre.
     var filteredFavourites: [Album] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return favouriteAlbums.filter { album in
+        let filtered = favouriteAlbums.filter { album in
             let matchesSearch = query.isEmpty
                 || album.name.localizedCaseInsensitiveContains(query)
                 || album.artist.localizedCaseInsensitiveContains(query)
             let matchesGenre = selectedGenre == nil || album.genre == selectedGenre
             return matchesSearch && matchesGenre
         }
+        return sortOption.sort(albums: filtered)
     }
 
     /// Total count of favourite albums in the collection.

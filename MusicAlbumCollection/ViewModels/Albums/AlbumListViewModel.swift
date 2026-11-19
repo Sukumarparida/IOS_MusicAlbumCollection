@@ -1,7 +1,7 @@
 import SwiftUI
 import Combine
 
-/// View model managing album list display, search, filtering, and deletion operations.
+/// View model managing album list display, search, genre filtering, sorting, and deletion operations.
 @MainActor
 final class AlbumListViewModel: ObservableObject {
     /// Search filter string for album title or artist.
@@ -10,13 +10,19 @@ final class AlbumListViewModel: ObservableObject {
     /// Selected genre filter; nil denotes all genres.
     @Published var selectedGenre: Genre? = nil
 
+    /// Active sorting option applied to displayed albums.
+    @Published var sortOption: AlbumSortOption = .recentlyAdded
+
+    /// Controls presentation of the filter and sort configuration sheet.
+    @Published var showingFilterSheet: Bool = false
+
     /// Flag indicating whether the add album sheet is presented.
     @Published var showingAddSheet: Bool = false
 
     /// When true, only favourite albums are displayed in the list.
     let favouritesOnly: Bool
 
-    /// Cached list of albums.
+    /// Cached list of albums in their persisted repository order.
     @Published private(set) var albums: [Album] = []
 
     private let repository: AlbumRepository
@@ -58,21 +64,43 @@ final class AlbumListViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Computed Properties
+    // MARK: - Computed Filter & Sort Properties
 
-    /// Albums matching search query, genre filter, and favourites filter.
-    var displayedAlbums: [Album] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return albums.filter { album in
-            let matchesSearch = query.isEmpty
-                || album.name.localizedCaseInsensitiveContains(query)
-                || album.artist.localizedCaseInsensitiveContains(query)
-
-            let matchesGenre = selectedGenre == nil || album.genre == selectedGenre
-            let matchesFav = !favouritesOnly || album.isFavourite
-
-            return matchesSearch && matchesGenre && matchesFav
+    /// Encapsulated filter state reflecting the current search, genre, and sort settings.
+    var filterState: AlbumFilterState {
+        get {
+            AlbumFilterState(
+                searchText: searchText,
+                selectedGenre: selectedGenre,
+                sortOption: sortOption
+            )
         }
+        set {
+            searchText = newValue.searchText
+            selectedGenre = newValue.selectedGenre
+            sortOption = newValue.sortOption
+        }
+    }
+
+    /// Number of active filters (selected genre and non-default sorting).
+    var activeFilterCount: Int {
+        var count = 0
+        if selectedGenre != nil { count += 1 }
+        if sortOption != .recentlyAdded { count += 1 }
+        return count
+    }
+
+    /// Whether any search query or genre filter is currently applied.
+    var isSearchingOrFiltering: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || selectedGenre != nil
+    }
+
+    /// Albums matching search query, genre filter, and favourites restriction, ordered by sortOption.
+    /// Filtering and sorting operations produce a derived array and never alter stored album order.
+    var displayedAlbums: [Album] {
+        let baseAlbums = favouritesOnly ? albums.filter { $0.isFavourite } : albums
+        return filterState.apply(to: baseAlbums)
     }
 
     /// Screen title based on mode.
@@ -87,15 +115,15 @@ final class AlbumListViewModel: ObservableObject {
 
     /// Title for the empty state view.
     var emptyTitle: String {
-        if !searchText.isEmpty || selectedGenre != nil {
-            return "No Results"
+        if isSearchingOrFiltering {
+            return "No Results Found"
         }
         return favouritesOnly ? "No Favourites Yet" : "No Albums"
     }
 
     /// SF Symbol icon name for the empty state view.
     var emptyIcon: String {
-        if !searchText.isEmpty || selectedGenre != nil {
+        if isSearchingOrFiltering {
             return "magnifyingglass"
         }
         return favouritesOnly ? "heart.slash" : "music.note"
@@ -103,8 +131,13 @@ final class AlbumListViewModel: ObservableObject {
 
     /// Informational message for the empty state view.
     var emptyDescription: String {
-        if !searchText.isEmpty || selectedGenre != nil {
-            return "Try adjusting your search or genre filter."
+        let cleanQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanQuery.isEmpty && selectedGenre != nil {
+            return "No \(selectedGenre?.rawValue ?? "") albums match \"\(cleanQuery)\"."
+        } else if !cleanQuery.isEmpty {
+            return "No albums match \"\(cleanQuery)\". Try searching by album or artist."
+        } else if let genre = selectedGenre {
+            return "No albums found in the \(genre.rawValue) genre."
         }
         return favouritesOnly
             ? "Tap the heart icon on any album to add it to your favourites."
@@ -112,6 +145,24 @@ final class AlbumListViewModel: ObservableObject {
     }
 
     // MARK: - Actions
+
+    /// Clears the active search query.
+    func clearSearch() {
+        searchText = ""
+    }
+
+    /// Clears only the genre filter and resets sorting to default.
+    func clearFilters() {
+        selectedGenre = nil
+        sortOption = .recentlyAdded
+    }
+
+    /// Resets search, genre filter, and sorting to their initial states.
+    func resetAll() {
+        searchText = ""
+        selectedGenre = nil
+        sortOption = .recentlyAdded
+    }
 
     /// Deletes albums matching selected offsets in the current displayed list.
     /// - Parameter offsets: The IndexSet of items to remove.
