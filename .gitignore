@@ -1,0 +1,13 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+project.xcworkspace/xcuserdata/
+MusicAlbumCollection.xcodeproj/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Tooling / CLI
+.agents/
+.gemini/

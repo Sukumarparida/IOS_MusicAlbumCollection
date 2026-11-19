@@ -1,0 +1,381 @@
+import Testing
+import Foundation
+
+// MARK: - Mock File Storage
+
+final class MockFileStorage: FileStorageProtocol, @unchecked Sendable {
+    var fileData: [URL: Data] = [:]
+    var backedUpFiles: [URL] = []
+
+    func fileExists(at url: URL) -> Bool {
+        fileData[url] != nil
+    }
+
+    func load<T: Decodable>(from url: URL) throws -> T {
+        guard let data = fileData[url] else {
+            throw FileStorageError.fileNotFound(url)
+        }
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            _ = backupCorruptedFile(at: url)
+            throw FileStorageError.decodingFailed(error.localizedDescription)
+        }
+    }
+
+    func save<T: Encodable>(_ value: T, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        fileData[url] = try encoder.encode(value)
+    }
+
+    func backupCorruptedFile(at url: URL) -> URL? {
+        backedUpFiles.append(url)
+        let backupURL = url.appendingPathExtension("corrupted")
+        fileData[backupURL] = fileData[url]
+        fileData.removeValue(forKey: url)
+        return backupURL
+    }
+}
+
+// MARK: - Album Repository Unit Tests
+
+@Suite("Album Persistence & Repository Tests")
+struct AlbumRepositoryTests {
+
+    let testStorageURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("test_albums_\(UUID().uuidString).json")
+
+    @Test("First launch with missing file creates sample data and writes atomically")
+    @MainActor
+    func firstLaunchMissingFile() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "test_suite_\(UUID().uuidString)")!
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+
+        #expect(!repository.albums.isEmpty)
+        #expect(repository.albums.count == 5)
+        #expect(mockStorage.fileExists(at: testStorageURL))
+    }
+
+    @Test("Application restart reloads saved albums and never re-inserts duplicate sample data")
+    @MainActor
+    func applicationRestartPersistence() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "test_suite_\(UUID().uuidString)")!
+
+        // Session 1: Launch and add a custom album
+        let session1 = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let customAlbum = Album(
+            name: "Discovery",
+            artist: "Daft Punk",
+            genre: .pop,
+            releaseYear: 2001,
+            musicDirector: "Daft Punk",
+            trackCount: 14,
+            favouriteTrack: "One More Time",
+            artworkIdentifier: "discovery_art"
+        )
+        session1.addAlbum(customAlbum)
+        let countAfterAdd = session1.albums.count
+
+        // Session 2: Simulate application restart using the same storage URL
+        let session2 = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+
+        #expect(session2.albums.count == countAfterAdd)
+        #expect(session2.albums.contains(where: { $0.name == "Discovery" && $0.artist == "Daft Punk" }))
+        // Verify artworkIdentifier was persisted and restored
+        #expect(session2.getAlbum(by: customAlbum.id)?.artworkIdentifier == "discovery_art")
+    }
+
+    @Test("Migration from legacy UserDefaults imports data and deletes legacy key")
+    @MainActor
+    func migrationFromUserDefaults() throws {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "migration_test_\(UUID().uuidString)")!
+        let legacyKey = "savedAlbums"
+
+        // Seed UserDefaults with legacy album data
+        let legacyAlbum = Album(
+            name: "Kind of Blue",
+            artist: "Miles Davis",
+            genre: .other,
+            releaseYear: 1959,
+            musicDirector: "Miles Davis",
+            trackCount: 5
+        )
+        let legacyData = try JSONEncoder().encode([legacyAlbum])
+        defaults.set(legacyData, forKey: legacyKey)
+
+        // Launch repository where file does not exist yet
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults,
+            userDefaultsKey: legacyKey
+        )
+
+        // Verify data was migrated into the repository
+        #expect(repository.albums.count == 1)
+        #expect(repository.albums.first?.name == "Kind of Blue")
+
+        // Verify it was saved to the file
+        #expect(mockStorage.fileExists(at: testStorageURL))
+
+        // Verify legacy key was cleaned up
+        #expect(defaults.data(forKey: legacyKey) == nil)
+    }
+
+    @Test("Corrupted JSON file is handled gracefully without crashing")
+    @MainActor
+    func corruptedJSONHandling() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "corrupt_test_\(UUID().uuidString)")!
+
+        // Seed file with corrupt non-JSON data
+        mockStorage.fileData[testStorageURL] = "INVALID_CORRUPT_JSON_DATA".data(using: .utf8)
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+
+        // Should not crash, and should load valid sample data
+        #expect(!repository.albums.isEmpty)
+        #expect(mockStorage.backedUpFiles.contains(testStorageURL))
+    }
+
+    @Test("Data rule: Listen count can never become negative")
+    @MainActor
+    func listenCountNeverNegative() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "rules_test_\(UUID().uuidString)")!
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+
+        let albumWithNegativeListens = Album(
+            name: "Negative Test",
+            artist: "Artist",
+            genre: .rock,
+            releaseYear: 2020,
+            musicDirector: "Director",
+            trackCount: 8,
+            listenCount: -10
+        )
+        repository.addAlbum(albumWithNegativeListens)
+
+        let stored = repository.getAlbum(by: albumWithNegativeListens.id)
+        #expect(stored?.listenCount == 0)
+    }
+
+    @Test("Data rule: Track count must be greater than zero")
+    @MainActor
+    func trackCountGreaterThanZero() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "rules_test_\(UUID().uuidString)")!
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+
+        let invalidTrackAlbum = Album(
+            name: "Zero Tracks",
+            artist: "Artist",
+            genre: .rock,
+            releaseYear: 2020,
+            musicDirector: "Director",
+            trackCount: 0
+        )
+        repository.addAlbum(invalidTrackAlbum)
+
+        let stored = repository.getAlbum(by: invalidTrackAlbum.id)
+        #expect(stored?.trackCount == 1)
+    }
+
+    @Test("Data rule: Empty album name or artist name is rejected")
+    @MainActor
+    func emptyNameOrArtistRejected() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "rules_test_\(UUID().uuidString)")!
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let initialCount = repository.albums.count
+
+        let emptyNameAlbum = Album(
+            name: "   ",
+            artist: "Valid Artist",
+            genre: .rock,
+            releaseYear: 2020,
+            musicDirector: "Director",
+            trackCount: 5
+        )
+        repository.addAlbum(emptyNameAlbum)
+        #expect(repository.albums.count == initialCount)
+
+        let emptyArtistAlbum = Album(
+            name: "Valid Name",
+            artist: "   ",
+            genre: .rock,
+            releaseYear: 2020,
+            musicDirector: "Director",
+            trackCount: 5
+        )
+        repository.addAlbum(emptyArtistAlbum)
+        #expect(repository.albums.count == initialCount)
+    }
+
+    @Test("ViewModel reflects changes immediately across computed properties")
+    @MainActor
+    func viewModelImmediateStateUpdate() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "vm_test_\(UUID().uuidString)")!
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let viewModel = AlbumViewModel(repository: repository)
+
+        let originalTotal = viewModel.totalAlbums
+        let testAlbum = Album(
+            name: "Rumours",
+            artist: "Fleetwood Mac",
+            genre: .rock,
+            releaseYear: 1977,
+            musicDirector: "Fleetwood Mac",
+            trackCount: 11,
+            isFavourite: true
+        )
+
+        viewModel.addAlbum(testAlbum)
+
+        #expect(viewModel.totalAlbums == originalTotal + 1)
+        #expect(viewModel.favouriteAlbums.contains(where: { $0.name == "Rumours" }))
+        #expect(viewModel.recentlyAdded.first?.name == "Rumours")
+
+        // Increment listen count
+        viewModel.incrementListenCount(testAlbum)
+        #expect(viewModel.album(withID: testAlbum.id)?.listenCount == 1)
+        #expect(viewModel.topListened.contains(where: { $0.id == testAlbum.id }))
+
+        // Toggle favourite
+        viewModel.toggleFavourite(testAlbum)
+        #expect(viewModel.album(withID: testAlbum.id)?.isFavourite == false)
+
+        // Delete album
+        viewModel.deleteAlbum(testAlbum)
+        #expect(viewModel.totalAlbums == originalTotal)
+        #expect(viewModel.album(withID: testAlbum.id) == nil)
+    }
+
+    @Test("DashboardViewModel dynamic statistics, reactivity, and sorting")
+    @MainActor
+    func dashboardDynamicStatisticsAndReactivity() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "dash_suite_\(UUID().uuidString)")!
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let albumVM = AlbumViewModel(repository: repository)
+        let dashVM = DashboardViewModel(repository: repository)
+        dashVM.bind(to: albumVM)
+
+        // Initial stats check (5 sample albums)
+        #expect(dashVM.totalAlbums == 5)
+        #expect(dashVM.totalTracks == (6 + 17 + 9 + 12 + 4))
+        #expect(dashVM.recentlyAdded.count == 5)
+        #expect(dashVM.hasAlbums == true)
+
+        // Adding an album updates stats and Recently Added immediately
+        let newAlbum = Album(
+            name: "Random Access Memories",
+            artist: "Daft Punk",
+            genre: .pop,
+            releaseYear: 2013,
+            musicDirector: "Daft Punk",
+            trackCount: 13,
+            favouriteTrack: "Get Lucky",
+            listenCount: 0,
+            isFavourite: true,
+            dateAdded: Date()
+        )
+        albumVM.addAlbum(newAlbum)
+
+        #expect(dashVM.totalAlbums == 6)
+        #expect(dashVM.totalTracks == 48 + 13)
+        #expect(dashVM.favouriteCount == 1)
+        #expect(dashVM.recentlyAdded.first?.id == newAlbum.id)
+
+        // Incrementing listen count updates Top Listened in descending order
+        albumVM.incrementListenCount(newAlbum)
+        albumVM.incrementListenCount(newAlbum)
+        #expect(dashVM.topListened.first?.id == newAlbum.id)
+        #expect(dashVM.topListened.first?.listenCount == 2)
+
+        // Toggle favourite updates immediately
+        albumVM.toggleFavourite(newAlbum)
+        #expect(dashVM.favouriteCount == 0)
+
+        // Deleting album updates stats, Recently Added, and Top Listened immediately
+        albumVM.deleteAlbum(newAlbum)
+        #expect(dashVM.totalAlbums == 5)
+        #expect(!dashVM.recentlyAdded.contains(where: { $0.id == newAlbum.id }))
+        #expect(!dashVM.topListened.contains(where: { $0.id == newAlbum.id }))
+    }
+
+    @Test("DashboardViewModel empty collection handling")
+    @MainActor
+    func dashboardEmptyCollectionHandling() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "dash_empty_\(UUID().uuidString)")!
+        let emptyURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("empty_\(UUID().uuidString).json")
+
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: emptyURL,
+            userDefaults: defaults
+        )
+        repository.deleteAlbums(ids: repository.albums.map { $0.id })
+
+        let albumVM = AlbumViewModel(repository: repository)
+        let dashVM = DashboardViewModel(repository: repository)
+        dashVM.bind(to: albumVM)
+
+        #expect(dashVM.totalAlbums == 0)
+        #expect(dashVM.totalArtists == 0)
+        #expect(dashVM.totalTracks == 0)
+        #expect(dashVM.favouriteCount == 0)
+        #expect(dashVM.hasAlbums == false)
+        #expect(dashVM.recentlyAdded.isEmpty)
+        #expect(dashVM.topListened.isEmpty)
+    }
+}
+
