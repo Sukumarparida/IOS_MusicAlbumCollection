@@ -1,32 +1,27 @@
 import SwiftUI
 
-/// Displays a list of albums (all albums or favourites only) with search, genre filtering, and album creation.
+/// Displays a scrollable list of albums with search, genre filtering, swipe-to-delete, and album creation.
 struct AlbumListView: View {
     @EnvironmentObject var albumVM: AlbumViewModel
-    var favouritesOnly: Bool = false
 
-    @State private var showingAddSheet = false
+    let favouritesOnly: Bool
+    @StateObject private var viewModel: AlbumListViewModel
 
-    private var title: String {
-        favouritesOnly ? "Favourites" : "Albums"
-    }
-
-    private var displayedAlbums: [Album] {
-        if favouritesOnly {
-            return albumVM.filteredAlbums.filter { $0.isFavourite }
-        } else {
-            return albumVM.filteredAlbums
-        }
+    /// Initializes AlbumListView with an optional favouritesOnly filter flag.
+    /// - Parameter favouritesOnly: When true, restricts list strictly to starred albums.
+    init(favouritesOnly: Bool = false) {
+        self.favouritesOnly = favouritesOnly
+        _viewModel = StateObject(wrappedValue: AlbumListViewModel(favouritesOnly: favouritesOnly))
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if displayedAlbums.isEmpty {
+                if viewModel.isEmpty {
                     emptyView
                 } else {
                     List {
-                        ForEach(displayedAlbums) { album in
+                        ForEach(viewModel.displayedAlbums) { album in
                             NavigationLink(value: album.id) {
                                 AlbumCardView(album: album)
                             }
@@ -34,14 +29,14 @@ struct AlbumListView: View {
                             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                         }
                         .onDelete { offsets in
-                            albumVM.deleteAlbums(at: offsets, from: displayedAlbums)
+                            viewModel.deleteAlbums(at: offsets)
                         }
                     }
                     .listStyle(.plain)
                 }
             }
-            .navigationTitle(title)
-            .searchable(text: $albumVM.searchText, prompt: "Search albums or artists")
+            .navigationTitle(viewModel.navigationTitle)
+            .searchable(text: $viewModel.searchText, prompt: "Search albums or artists")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     genreFilterMenu
@@ -50,18 +45,22 @@ struct AlbumListView: View {
                 if !favouritesOnly {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
-                            showingAddSheet = true
+                            viewModel.showingAddSheet = true
                         } label: {
                             Image(systemName: "plus")
                         }
+                        .accessibilityLabel("Add Album")
                     }
                 }
             }
-            .sheet(isPresented: $showingAddSheet) {
-                AlbumFormView(albumToEdit: nil)
+            .sheet(isPresented: $viewModel.showingAddSheet) {
+                AddAlbumView()
             }
             .navigationDestination(for: UUID.self) { id in
                 AlbumDetailView(albumID: id)
+            }
+            .onAppear {
+                viewModel.bind(to: albumVM)
             }
         }
     }
@@ -71,11 +70,11 @@ struct AlbumListView: View {
     private var genreFilterMenu: some View {
         Menu {
             Button {
-                albumVM.selectedGenre = nil
+                viewModel.selectedGenre = nil
             } label: {
                 HStack {
                     Text("All Genres")
-                    if albumVM.selectedGenre == nil {
+                    if viewModel.selectedGenre == nil {
                         Image(systemName: "checkmark")
                     }
                 }
@@ -85,11 +84,11 @@ struct AlbumListView: View {
 
             ForEach(Genre.allCases) { genre in
                 Button {
-                    albumVM.selectedGenre = genre
+                    viewModel.selectedGenre = genre
                 } label: {
                     HStack {
                         Text(genre.rawValue)
-                        if albumVM.selectedGenre == genre {
+                        if viewModel.selectedGenre == genre {
                             Image(systemName: "checkmark")
                         }
                     }
@@ -98,7 +97,7 @@ struct AlbumListView: View {
         } label: {
             Label(
                 "Filter",
-                systemImage: albumVM.selectedGenre == nil
+                systemImage: viewModel.selectedGenre == nil
                     ? "line.3.horizontal.decrease.circle"
                     : "line.3.horizontal.decrease.circle.fill"
             )
@@ -107,33 +106,10 @@ struct AlbumListView: View {
 
     private var emptyView: some View {
         EmptyStateView(
-            title: emptyTitle,
-            systemImage: emptyIcon,
-            description: emptyDescription
+            title: viewModel.emptyTitle,
+            systemImage: viewModel.emptyIcon,
+            description: viewModel.emptyDescription
         )
-    }
-
-    private var emptyTitle: String {
-        if !albumVM.searchText.isEmpty || albumVM.selectedGenre != nil {
-            return "No Results"
-        }
-        return favouritesOnly ? "No Favourites Yet" : "No Albums"
-    }
-
-    private var emptyIcon: String {
-        if !albumVM.searchText.isEmpty || albumVM.selectedGenre != nil {
-            return "magnifyingglass"
-        }
-        return favouritesOnly ? "heart.slash" : "music.note"
-    }
-
-    private var emptyDescription: String {
-        if !albumVM.searchText.isEmpty || albumVM.selectedGenre != nil {
-            return "Try adjusting your search or genre filter."
-        }
-        return favouritesOnly
-            ? "Tap the heart icon on any album to add it to your favourites."
-            : "Tap the '+' button above to add your first album."
     }
 }
 

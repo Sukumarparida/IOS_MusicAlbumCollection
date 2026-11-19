@@ -377,5 +377,164 @@ struct AlbumRepositoryTests {
         #expect(dashVM.recentlyAdded.isEmpty)
         #expect(dashVM.topListened.isEmpty)
     }
-}
 
+    // MARK: - Album Form Validator & View Models Tests
+
+    @Test("AlbumFormValidator validates album name and artist correctly")
+    func formValidatorNameAndArtist() {
+        #expect(AlbumFormValidator.validateName("") != nil)
+        #expect(AlbumFormValidator.validateName("   ") != nil)
+        #expect(AlbumFormValidator.validateName("Valid Name") == nil)
+
+        #expect(AlbumFormValidator.validateArtist("") != nil)
+        #expect(AlbumFormValidator.validateArtist("   ") != nil)
+        #expect(AlbumFormValidator.validateArtist("Valid Artist") == nil)
+    }
+
+    @Test("AlbumFormValidator validates release year range (1900 to current year)")
+    func formValidatorReleaseYear() {
+        let currentYear = Calendar.current.component(.year, from: Date())
+
+        #expect(AlbumFormValidator.validateReleaseYear("") != nil)
+        #expect(AlbumFormValidator.validateReleaseYear("abc") != nil)
+        #expect(AlbumFormValidator.validateReleaseYear("1899") != nil)
+        #expect(AlbumFormValidator.validateReleaseYear("\(currentYear + 1)") != nil)
+
+        #expect(AlbumFormValidator.validateReleaseYear("1900") == nil)
+        #expect(AlbumFormValidator.validateReleaseYear("1995") == nil)
+        #expect(AlbumFormValidator.validateReleaseYear("\(currentYear)") == nil)
+    }
+
+    @Test("AlbumFormValidator validates track count (> 0)")
+    func formValidatorTrackCount() {
+        #expect(AlbumFormValidator.validateTrackCount("") != nil)
+        #expect(AlbumFormValidator.validateTrackCount("0") != nil)
+        #expect(AlbumFormValidator.validateTrackCount("-5") != nil)
+        #expect(AlbumFormValidator.validateTrackCount("xyz") != nil)
+
+        #expect(AlbumFormValidator.validateTrackCount("1") == nil)
+        #expect(AlbumFormValidator.validateTrackCount("12") == nil)
+    }
+
+    @Test("AlbumFormViewModel preserves ID, dateAdded, listenCount, and isFavourite when editing")
+    @MainActor
+    func formViewModelPreservesMetadata() {
+        let originalDate = Date(timeIntervalSince1970: 1_000_000)
+        let originalID = UUID()
+        let existingAlbum = Album(
+            id: originalID,
+            name: "Original Name",
+            artist: "Original Artist",
+            genre: .rock,
+            releaseYear: 1990,
+            musicDirector: "Old Director",
+            trackCount: 10,
+            favouriteTrack: "Old Track",
+            listenCount: 42,
+            isFavourite: true,
+            notes: "Old Notes",
+            dateAdded: originalDate,
+            artworkIdentifier: "vinyl_classic"
+        )
+
+        let formVM = AlbumFormViewModel(albumToEdit: existingAlbum)
+        #expect(formVM.isEditing)
+        #expect(formVM.isValid)
+
+        // Modify editable fields
+        formVM.name = "Updated Name"
+        formVM.artist = "Updated Artist"
+        formVM.releaseYear = "1995"
+        formVM.trackCount = "12"
+        formVM.musicDirector = "New Director"
+        formVM.favouriteTrack = "New Track"
+        formVM.notes = "New Notes"
+
+        let updated = formVM.buildAlbum()
+        #expect(updated != nil)
+        #expect(updated?.id == originalID)
+        #expect(updated?.dateAdded == originalDate)
+        #expect(updated?.listenCount == 42)
+        #expect(updated?.isFavourite == true)
+        #expect(updated?.name == "Updated Name")
+        #expect(updated?.artist == "Updated Artist")
+        #expect(updated?.releaseYear == 1995)
+        #expect(updated?.trackCount == 12)
+    }
+
+    @Test("AlbumDetailViewModel presents formatted data and handles actions")
+    @MainActor
+    func detailViewModelPresentationAndActions() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "detail_vm_\(UUID().uuidString)")!
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let albumVM = AlbumViewModel(repository: repository)
+
+        let album = repository.albums.first!
+        let detailVM = AlbumDetailViewModel(albumID: album.id, repository: repository)
+        detailVM.bind(to: albumVM)
+
+        #expect(detailVM.name == album.name)
+        #expect(detailVM.artist == album.artist)
+        #expect(detailVM.genreName == album.genre.rawValue)
+        #expect(!detailVM.formattedDateAdded.isEmpty)
+        #expect(detailVM.listenCount == album.listenCount)
+
+        // Test toggle favourite
+        let prevFav = detailVM.isFavourite
+        detailVM.toggleFavourite()
+        #expect(detailVM.isFavourite == !prevFav)
+
+        // Test listen count increment
+        let prevListens = detailVM.listenCount
+        detailVM.recordListen()
+        #expect(detailVM.listenCount == prevListens + 1)
+
+        // Test delete album
+        let deleted = detailVM.deleteAlbum()
+        #expect(deleted == true)
+        #expect(detailVM.album == nil)
+        #expect(albumVM.album(withID: album.id) == nil)
+    }
+
+    @Test("AlbumListViewModel filters by search text and genre, and deletes items")
+    @MainActor
+    func listViewModelSearchFilterAndDelete() {
+        let mockStorage = MockFileStorage()
+        let defaults = UserDefaults(suiteName: "list_vm_\(UUID().uuidString)")!
+        let repository = DefaultAlbumRepository(
+            fileStorage: mockStorage,
+            storageURL: testStorageURL,
+            userDefaults: defaults
+        )
+        let albumVM = AlbumViewModel(repository: repository)
+        let listVM = AlbumListViewModel(repository: repository, favouritesOnly: false)
+        listVM.bind(to: albumVM)
+
+        #expect(listVM.displayedAlbums.count == 5)
+
+        // Search filter
+        listVM.searchText = "Rahman"
+        #expect(listVM.displayedAlbums.allSatisfy { $0.artist.contains("Rahman") })
+
+        listVM.searchText = ""
+
+        // Genre filter
+        listVM.selectedGenre = .rock
+        #expect(listVM.displayedAlbums.allSatisfy { $0.genre == .rock })
+
+        // Clear filter
+        listVM.selectedGenre = nil
+        #expect(listVM.displayedAlbums.count == 5)
+
+        // Delete first item
+        let firstID = listVM.displayedAlbums.first!.id
+        listVM.deleteAlbums(at: IndexSet(integer: 0))
+        #expect(!listVM.displayedAlbums.contains(where: { $0.id == firstID }))
+        #expect(listVM.displayedAlbums.count == 4)
+    }
+}

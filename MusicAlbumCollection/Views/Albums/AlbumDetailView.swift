@@ -1,20 +1,24 @@
 import SwiftUI
 
-/// Full details of one album, with favourite, listened, edit, and delete actions.
+/// Full details of one album, presenting all metadata including artwork, date added, listen count,
+/// and providing edit, delete, favourite, and listened actions.
 struct AlbumDetailView: View {
     @EnvironmentObject var albumVM: AlbumViewModel
     @Environment(\.dismiss) private var dismiss
 
     let albumID: UUID
+    @StateObject private var viewModel: AlbumDetailViewModel
 
-    @State private var showingEdit = false
-    @State private var showingDeleteAlert = false
-    @State private var isProcessingListen = false
-    @State private var justRecordedListen = false
+    /// Initializes AlbumDetailView with the album's UUID.
+    /// - Parameter albumID: The unique identifier of the album.
+    init(albumID: UUID) {
+        self.albumID = albumID
+        _viewModel = StateObject(wrappedValue: AlbumDetailViewModel(albumID: albumID))
+    }
 
     var body: some View {
         Group {
-            if let album = albumVM.album(withID: albumID) {
+            if let album = viewModel.album {
                 content(for: album)
             } else {
                 Text("Album not found")
@@ -23,25 +27,29 @@ struct AlbumDetailView: View {
         }
         .navigationTitle("Album Details")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            viewModel.bind(to: albumVM)
+        }
     }
 
-    /// The main screen content for a found album.
+    // MARK: - Main Screen Content
+
     private func content(for album: Album) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 // Header Artwork & Titles
-                VStack(spacing: 8) {
-                    artworkView(for: album)
+                VStack(spacing: 10) {
+                    artworkView
                         .frame(width: 140, height: 140)
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: 4)
+                        .shadow(color: Color.black.opacity(0.14), radius: 10, x: 0, y: 4)
 
-                    Text(album.name)
-                        .font(.title.bold())
+                    Text(viewModel.name)
+                        .font(.title2.bold())
                         .multilineTextAlignment(.center)
 
-                    Text(album.artist)
-                        .font(.title3)
+                    Text(viewModel.artist)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity)
@@ -49,17 +57,21 @@ struct AlbumDetailView: View {
 
                 // Metadata Rows
                 VStack(spacing: 0) {
-                    row("Genre", album.genre.rawValue)
+                    row("Genre", viewModel.genreName)
                     Divider()
-                    row("Release Year", String(album.releaseYear))
+                    row("Release Year", viewModel.releaseYearString)
                     Divider()
-                    row("Music Director", album.musicDirector.isEmpty ? "-" : album.musicDirector)
+                    row("Music Director", viewModel.musicDirector)
                     Divider()
-                    row("Tracks", String(album.trackCount))
+                    row("Number of Tracks", viewModel.trackCountString)
                     Divider()
-                    row("Favourite Track", album.favouriteTrack.isEmpty ? "-" : album.favouriteTrack)
+                    row("Favourite Track", viewModel.favouriteTrack)
                     Divider()
-                    listenCountRow(count: album.listenCount)
+                    favouriteStatusRow(isFav: viewModel.isFavourite)
+                    Divider()
+                    listenCountRow(count: viewModel.listenCount)
+                    Divider()
+                    row("Date Added", viewModel.formattedDateAdded)
                 }
                 .padding(.horizontal)
                 .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -67,8 +79,9 @@ struct AlbumDetailView: View {
 
                 // Notes Section
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Notes").font(.headline)
-                    Text(album.notes.isEmpty ? "No notes." : album.notes)
+                    Text("Notes")
+                        .font(.headline)
+                    Text(viewModel.notes)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 4)
@@ -76,26 +89,26 @@ struct AlbumDetailView: View {
                 // Action Buttons: Listened & Favourite
                 HStack(spacing: 12) {
                     Button {
-                        recordListenAction(for: album)
+                        viewModel.recordListen()
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: justRecordedListen ? "checkmark.circle.fill" : "headphones")
-                            Text(justRecordedListen ? "Recorded (+1)!" : "Listened")
+                            Image(systemName: viewModel.justRecordedListen ? "checkmark.circle.fill" : "headphones")
+                            Text(viewModel.justRecordedListen ? "Recorded (+1)!" : "Listened")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(justRecordedListen ? .green : .accentColor)
-                    .disabled(isProcessingListen)
+                    .tint(viewModel.justRecordedListen ? .green : .accentColor)
+                    .disabled(viewModel.isProcessingListen)
 
                     Button {
-                        toggleFavouriteAction(for: album)
+                        viewModel.toggleFavourite()
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: album.isFavourite ? "heart.fill" : "heart")
-                                .foregroundStyle(album.isFavourite ? .pink : .primary)
-                            Text(album.isFavourite ? "Favourited" : "Favourite")
+                            Image(systemName: viewModel.isFavourite ? "heart.fill" : "heart")
+                                .foregroundStyle(viewModel.isFavourite ? .pink : .primary)
+                            Text(viewModel.isFavourite ? "Favourited" : "Favourite")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -104,9 +117,9 @@ struct AlbumDetailView: View {
                 }
                 .controlSize(.large)
 
-                // Delete Button
+                // Delete Button with Confirmation
                 Button(role: .destructive) {
-                    showingDeleteAlert = true
+                    viewModel.showingDeleteAlert = true
                 } label: {
                     Label("Delete Album", systemImage: "trash")
                         .frame(maxWidth: .infinity)
@@ -120,30 +133,28 @@ struct AlbumDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 14) {
                     Button {
-                        toggleFavouriteAction(for: album)
+                        viewModel.toggleFavourite()
                     } label: {
-                        Image(systemName: album.isFavourite ? "heart.fill" : "heart")
-                            .foregroundStyle(album.isFavourite ? .pink : .primary)
+                        Image(systemName: viewModel.isFavourite ? "heart.fill" : "heart")
+                            .foregroundStyle(viewModel.isFavourite ? .pink : .primary)
                     }
-                    .accessibilityLabel(album.isFavourite ? "Remove from favourites" : "Mark as favourite")
+                    .accessibilityLabel(viewModel.isFavourite ? "Remove from favourites" : "Mark as favourite")
 
                     Button("Edit") {
-                        showingEdit = true
+                        viewModel.showingEditSheet = true
                     }
                 }
             }
         }
-        .sheet(isPresented: $showingEdit) {
-            AlbumFormView(albumToEdit: album)
+        .sheet(isPresented: $viewModel.showingEditSheet) {
+            EditAlbumView(album: album)
         }
-        .alert("Delete this album?", isPresented: $showingDeleteAlert) {
-            Button("Delete", role: .destructive) {
-                albumVM.deleteAlbum(album)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This cannot be undone.")
+        .deleteAlbumConfirmation(
+            isPresented: $viewModel.showingDeleteAlert,
+            albumName: viewModel.name
+        ) {
+            viewModel.deleteAlbum()
+            dismiss()
         }
     }
 
@@ -151,9 +162,26 @@ struct AlbumDetailView: View {
 
     private func row(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
+                .foregroundStyle(.secondary)
             Spacer()
-            Text(value).multilineTextAlignment(.trailing)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.vertical, 11)
+    }
+
+    private func favouriteStatusRow(isFav: Bool) -> some View {
+        HStack {
+            Text("Favourite Status")
+                .foregroundStyle(.secondary)
+            Spacer()
+            HStack(spacing: 4) {
+                Image(systemName: isFav ? "heart.fill" : "heart")
+                    .foregroundStyle(isFav ? .pink : .secondary)
+                Text(isFav ? "Yes" : "No")
+                    .fontWeight(.medium)
+            }
         }
         .padding(.vertical, 11)
     }
@@ -172,19 +200,28 @@ struct AlbumDetailView: View {
     }
 
     @ViewBuilder
-    private func artworkView(for album: Album) -> some View {
-        if let artworkID = album.artworkIdentifier, !artworkID.isEmpty {
-            Image(artworkID)
-                .resizable()
-                .scaledToFill()
+    private var artworkView: some View {
+        if let artworkID = viewModel.artworkIdentifier, !artworkID.isEmpty {
+            if let presetGradient = presetGradient(for: artworkID) {
+                ZStack {
+                    presetGradient
+                    Image(systemName: presetIcon(for: artworkID))
+                        .font(.system(size: 48))
+                        .foregroundStyle(.white)
+                }
+            } else {
+                Image(artworkID)
+                    .resizable()
+                    .scaledToFill()
+            }
         } else {
-            stylizedVinylPlaceholder(for: album)
+            stylizedVinylPlaceholder
         }
     }
 
-    private func stylizedVinylPlaceholder(for album: Album) -> some View {
+    private var stylizedVinylPlaceholder: some View {
         ZStack {
-            genreGradient(for: album.genre)
+            genreGradient(for: viewModel.genre)
 
             Circle()
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
@@ -230,33 +267,28 @@ struct AlbumDetailView: View {
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
-    // MARK: - Actions
-
-    /// Records a listen with responsive visual and haptic feedback, preventing accidental rapid double taps.
-    private func recordListenAction(for album: Album) {
-        guard !isProcessingListen else { return }
-        isProcessingListen = true
-        justRecordedListen = true
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-            albumVM.incrementListenCount(album)
-        }
-
-        Task {
-            try? await Task.sleep(nanoseconds: 750_000_000)
-            withAnimation {
-                justRecordedListen = false
-                isProcessingListen = false
-            }
+    private func presetGradient(for preset: String) -> LinearGradient? {
+        switch preset {
+        case "vinyl_classic":
+            return LinearGradient(colors: [Color.black, Color.gray], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case "vinyl_gold":
+            return LinearGradient(colors: [Color.orange, Color.yellow], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case "vinyl_neon":
+            return LinearGradient(colors: [Color.purple, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case "vinyl_retro":
+            return LinearGradient(colors: [Color.brown, Color.orange.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        default:
+            return nil
         }
     }
 
-    /// Toggles the album favourite flag with responsive haptic feedback and persistence.
-    private func toggleFavouriteAction(for album: Album) {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-            albumVM.toggleFavourite(album)
+    private func presetIcon(for preset: String) -> String {
+        switch preset {
+        case "vinyl_classic": return "music.note"
+        case "vinyl_gold": return "star.fill"
+        case "vinyl_neon": return "sparkles"
+        case "vinyl_retro": return "guitars"
+        default: return "opticaldisc"
         }
     }
 }
